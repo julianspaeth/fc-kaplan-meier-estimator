@@ -1,8 +1,9 @@
-FROM python:3.8
+FROM registry.blitzhub.io/python_3.8
 
 RUN apt-get update
 RUN apt-get install -y redis-server supervisor nginx
 
+RUN pip3 install --upgrade pip
 RUN pip3 install gunicorn
 
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf

@@ -1,10 +1,12 @@
 import queue as q
 
+import pandas as pd
 import redis
 import rq
+import yaml
 from flask import Blueprint, jsonify, request, current_app
 
-from fc_app.mean import calculate_global_mean, calculate_local_mean, read_input, write_results
+from fc_app.kaplan_meier import calculate_global, calculate_local_counts, read_input, write_results
 from redis_util import redis_set, redis_get, get_step, set_step
 
 pool = redis.BlockingConnectionPool(host='localhost', port=6379, db=0, queue_class=q.Queue)
@@ -14,7 +16,7 @@ r = redis.Redis(connection_pool=pool)
 # Change it to True later to send data from the coordinator to the clients or vice versa.
 redis_set('available', False)
 
-# The various steps of the mean app. This list is not really used and only an overview.
+# The various steps of the KM app. This list is not really used and only an overview.
 STEPS = ['start', 'setup', 'local_calculation', 'waiting', 'global_calculation', 'broadcast_results', 'write_results',
          'finalize', 'finished']
 
@@ -43,25 +45,28 @@ def status():
 
     if get_step() == 'start':
         current_app.logger.info('[STEP] start')
-        current_app.logger.info('[API] Federated Mean App')
+        current_app.logger.info('[API] Federated Kaplan-Meier Estimator')
 
     elif get_step() == 'local_calculation':
         current_app.logger.info('[STEP] local_calculation')
-        local_mean, nr_samples = calculate_local_mean()
+        local_counts = calculate_local_counts()
 
         if redis_get('is_coordinator'):
-            # if this is the coordinator, directly add the local mean and number of samples to the global_data list
+            # if this is the coordinator, directly add the local counts and number of samples to the global_data list
             global_data = redis_get('global_data')
-            global_data.append([local_mean, nr_samples])
+            dfs = {}
+            for key in local_counts.keys():
+                dfs[key] = pd.DataFrame.from_dict(local_counts[key], dtype=float)
+            global_data.append(dfs)
             redis_set('global_data', global_data)
             current_app.logger.info('[STEP] : waiting_for_clients')
+            set_step('waiting')
         else:
-            # if this is a client, set the local mean and number of samples to local_data and set available to true
-            redis_set('local_data', [local_mean, nr_samples])
+            # if this is a client, set the local counts and number of samples to local_data and set available to true
+            redis_set('local_data', local_counts)
             current_app.logger.info('[STEP] waiting_for_coordinator')
             redis_set('available', True)
-
-        set_step('waiting')
+            set_step('waiting')
 
     elif get_step() == 'waiting':
         current_app.logger.info('[STEP] waiting')
@@ -76,20 +81,22 @@ def status():
     elif get_step() == 'global_calculation':
         # as soon as all data has arrived the global calculation starts
         current_app.logger.info('[STEP] global_calculation')
-        calculate_global_mean()
+        calculate_global()
         set_step("broadcast_results")
 
     elif get_step() == 'broadcast_results':
-        # as soon as the global mean was calculated, the result is broadcasted to the clients
+        # as soon as the global km was calculated, the result is broadcasted to the clients
         current_app.logger.info('[STEP] broadcast_results')
         current_app.logger.info('[API] Share global results with clients')
+        global_km = redis_get('global_km')
+        current_app.logger.info(global_km)
         redis_set('available', True)
         set_step('write_results')
 
     elif get_step() == 'write_results':
-        # The global mean is written to the output directory
+        # The global km is written to the output directory
         current_app.logger.info('[STEP] write_results')
-        write_results(redis_get('global_mean'), OUTPUT_DIR)
+        write_results(redis_get('global_km'), OUTPUT_DIR)
         current_app.logger.info('[API] Finalize client')
         if redis_get('is_coordinator'):
             # The coordinator is already finished now
@@ -129,15 +136,17 @@ def data():
     """
     if request.method == 'POST':
         current_app.logger.info('[API] /data POST request')
-        current_app.logger.info(request.get_json(True))
         if redis_get('is_coordinator'):
             # Get data from clients (as coordinator)
             if get_step() != 'finalize':
-                # Get local means of the clients
+                # Get local counts of the clients
                 global_data = redis_get('global_data')
-                global_data.append(request.get_json(True)['data'])
+                dfs = {}
+                client_counts = request.get_json(True)['data']
+                for key in client_counts.keys():
+                    dfs[key] = pd.DataFrame.from_dict(client_counts[key], dtype=float)
+                global_data.append(dfs)
                 redis_set('global_data', global_data)
-                current_app.logger.info('[API] ' + str(global_data))
                 return jsonify(True)
             else:
                 # Get Finished flags of the clients
@@ -147,10 +156,11 @@ def data():
                 redis_set('finished', finish)
                 return jsonify(True)
         else:
-            # Get global mean from coordinator (as client)
+            # Get global result from coordinator (as client)
+            current_app.logger.info('GET GLOBAL RESULT FROM COORDINATOR!')
             current_app.logger.info('[API] ' + str(request.get_json()))
-            redis_set('global_mean', request.get_json(True)['global_mean'])
-            current_app.logger.info('[API] ' + str(redis_get('global_mean')))
+            redis_set('global_km', request.get_json(True)['global_km'])
+            current_app.logger.info('[API] ' + str(redis_get('global_km')))
             set_step('write_results')
             return jsonify(True)
 
@@ -159,11 +169,11 @@ def data():
         if not redis_get('is_coordinator'):
             # send data to coordinator (as client)
             if get_step() != 'finalize':
-                # Send local mean to the coordinator
+                # Send local KM to the coordinator
                 current_app.logger.info('[API] send data to coordinator')
                 redis_set('available', False)
                 local_data = redis_get('local_data')
-                current_app.logger.info(local_data)
+
                 return jsonify({'data': local_data})
             else:
                 # Send finish flag to the coordinator
@@ -175,9 +185,9 @@ def data():
             # broadcast data to clients (as coordinator)
             current_app.logger.info('[API] broadcast data from coordinator to clients')
             redis_set('available', False)
-            global_mean = redis_get('global_mean')
-            current_app.logger.info(global_mean)
-            return jsonify({'global_mean': global_mean})
+            global_km = redis_get('global_km')
+            current_app.logger.info(global_km)
+            return jsonify({'global_km': global_km})
 
     else:
         current_app.logger.info('[API] Wrong request type, only GET and POST allowed')
@@ -194,15 +204,14 @@ def setup():
     """
     set_step('setup')
     current_app.logger.info('[STEP] setup')
+    read_config()
     retrieve_setup_parameters()
-    files = read_input(INPUT_DIR)
-    if len(files) == 0:
+    input_data = read_input(INPUT_DIR)
+    if input_data is None:
         current_app.logger.info('[API] no data was found.')
         return jsonify(False)
     else:
-        current_app.logger.info('[API] Data: ' + str(files) + ' found in ' + str(len(files)) + ' files.')
-        current_app.logger.info('[API] compute local mean of ' + str(files))
-        redis_set('files', files)
+        redis_set('files', input_data)
         set_step("local_calculation")
         return jsonify(True)
 
@@ -256,3 +265,18 @@ def have_clients_finished():
     else:
         current_app.logger.info('[API] At least one client did not finish yet-')
         return False
+
+
+def read_config():
+    with open(INPUT_DIR + '/config.yml') as f:
+        config = yaml.load(f, Loader=yaml.FullLoader)['fc_kaplan_meier']
+
+        redis_set('input_filename', config['files']['input'])
+        redis_set('survival_function_filename', config['files']['output']['survival_function'])
+        redis_set('survival_plot_filename', config['files']['output']['survival_plot'])
+        redis_set('logrank_test_filename', config['files']['output']['logrank_test'])
+
+        redis_set('duration_col', config['parameters']['duration_col'])
+        redis_set('event_col', config['parameters']['event_col'])
+        redis_set('category_col', config['parameters']['category_col'])
+        redis_set('differential_privacy', config['parameters']['differential_privacy'])
