@@ -268,7 +268,7 @@ def have_clients_finished():
 
 def read_config():
     with open(INPUT_DIR + '/config.yml') as f:
-        config = yaml.load(f, Loader=yaml.FullLoader)['fc_kaplan_meier']
+        config = yaml.load(f, Loader=yaml.FullLoader)['fc-kaplan-meier']
 
         redis_set('input_filename', config['files']['input'])
         redis_set('survival_function_filename', config['files']['output']['survival_function'])

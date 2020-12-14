@@ -1,4 +1,4 @@
-fc_kaplan_meier:
+fc-kaplan-meier:
   files: # file names
     input: lymphoma1.csv # name of the input CSV/TSV/sas7bdat file
     output: # name of the output files
