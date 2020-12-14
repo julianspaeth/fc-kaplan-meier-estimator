@@ -8,6 +8,9 @@ The app computes the survival function estimation of a csv file. The file should
 category column is included, multiple survival functions will be estimated and a pairwise logrank test will be
 performed.
 
+To run the app, the input folder should contain a CSV/TSV/SASS file and a config.yml describing that file.
+An example config.yml is included in this repository. 
+
 
 ### Technical Details
 

@@ -333,23 +333,29 @@ def logrank_test(df1, df2):
     return stats.chi2.sf(U, 1), U
 
 
-def pairwise_logrank_test(data, alpha=0.05, method='bonferroni'):
+def pairwise_logrank_test(data, alpha=0.05):
     current_app.logger.info("Compute Pairwise logrank test")
     my_index = pd.MultiIndex(levels=[[], []],
                              codes=[[], []],
                              names=[u'Category 1', u'Category 2'])
-    my_columns = [u'test_statistic', u'p', u'log(p)', u'p_bonf', u'log(p_bonf)']
+    method = redis_get('multipletesting_method')
+    p_method = 'p_' + str(method)
+    log_p_method = 'log(p_' + str(method) + ')'
+    my_columns = [u'test_statistic', u'p', u'log(p)', p_method, log_p_method]
     p_matrix = pd.DataFrame(index=my_index, columns=my_columns)
     for category, category2 in itertools.combinations(list(data.keys()), 2):
         p, U = logrank_test(data[category2], data[category])
         p_matrix.loc[(category2, category), :] = [U, p, np.nan, np.nan, np.nan]
     p_corrected = multipletests(p_matrix.loc[:, "p"].to_list(), alpha=alpha, method=method, is_sorted=False,
                                 returnsorted=False)
-    p_matrix["p_bonf"] = p_corrected[1]
+    p_matrix[p_method] = p_corrected[1]
     p_matrix["log(p)"] = p_matrix.loc[:, "p"].apply(lambda x: -np.log2(x))
-    p_matrix["log(p_bonf)"] = p_matrix.loc[:, "p"].apply(lambda x: -np.log2(x))
+    p_matrix[log_p_method] = p_matrix.loc[:, "p"].apply(lambda x: -np.log2(x))
     p_matrix = p_matrix.astype("float32")
     p_matrix = p_matrix.reset_index()
+    if p_matrix.shape[0] < 2:
+        p_matrix = p_matrix.drop(p_method, axis=1)
+        p_matrix = p_matrix.drop(log_p_method, axis=1)
     if "int" in str(p_matrix.dtypes["Category 1"]):
         p_matrix = p_matrix.sort_values(['Category 1', 'Category 2'], ascending=[1, 1])
 

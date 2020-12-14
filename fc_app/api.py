@@ -87,7 +87,6 @@ def status():
     elif get_step() == 'broadcast_results':
         # as soon as the global km was calculated, the result is broadcasted to the clients
         current_app.logger.info('[STEP] broadcast_results')
-        current_app.logger.info('[API] Share global results with clients')
         global_km = redis_get('global_km')
         current_app.logger.info(global_km)
         redis_set('available', True)
@@ -280,3 +279,4 @@ def read_config():
         redis_set('event_col', config['parameters']['event_col'])
         redis_set('category_col', config['parameters']['category_col'])
         redis_set('differential_privacy', config['parameters']['differential_privacy'])
+        redis_set('multipletesting_method', config['parameters']['multipletesting_method'])
